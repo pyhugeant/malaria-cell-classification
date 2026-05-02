@@ -5,7 +5,7 @@ project:
   device: auto
 
 data:
-  root_dir: /content/drive/MyDrive/Malaria_cell_classification/data/malaria
+  root_dir: /content/gdrive/MyDrive/Malaria_cell_classification/data/malaria
   image_size: 224
   train_ratio: 0.70
   val_ratio: 0.15
