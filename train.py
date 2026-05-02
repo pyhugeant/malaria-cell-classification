@@ -1,3 +1,5 @@
+import matplotlib.pyplot as plt
+import seaborn as sns
 import argparse
 import json
 from pathlib import Path
@@ -176,3 +178,68 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+def plot_training_curves(history, save_path):
+    import pandas as pd
+
+    df = pd.DataFrame(history)
+
+    plt.figure(figsize=(10, 4))
+
+    # Loss
+    plt.subplot(1, 2, 1)
+    plt.plot(df["epoch"], df["train_loss"], label="train")
+    plt.plot(df["epoch"], df["val_loss"], label="val")
+    plt.title("Loss")
+    plt.legend()
+
+    # F1
+    plt.subplot(1, 2, 2)
+    plt.plot(df["epoch"], df["train_f1"], label="train")
+    plt.plot(df["epoch"], df["val_f1"], label="val")
+    plt.title("F1 Score")
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+def plot_confusion_matrix(model, loader, device, save_path):
+    import numpy as np
+
+    model.eval()
+
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for images, labels in loader:
+            images = images.to(device)
+            outputs = model(images)
+            preds = torch.argmax(outputs, dim=1)
+
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+    cm = np.zeros((2, 2), dtype=int)
+
+    for t, p in zip(all_labels, all_preds):
+        cm[t, p] += 1
+
+    plt.figure(figsize=(5, 4))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=["Parasitized", "Uninfected"],
+                yticklabels=["Parasitized", "Uninfected"])
+
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("Confusion Matrix")
+
+    plt.savefig(save_path)
+    plt.close()
+
+# save cures
+plot_training_curves(history, run_dir / "training_curve.png")
+
+# save confusion matrix（test set）
+plot_confusion_matrix(model, test_loader, device, run_dir / "confusion_matrix.png")
