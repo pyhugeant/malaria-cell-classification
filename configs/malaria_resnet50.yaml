@@ -1,7 +1,7 @@
 project:
   name: malaria-cell-classification
   seed: 42
-  output_dir: runs
+  output_dir: /content/gdrive/MyDrive/malaria_cell_classification/runs
   device: auto
 
 data:
