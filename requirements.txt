@@ -1,0 +1,7 @@
+torch
+tifffile
+numpy
+pandas
+pyyaml
+tqdm
+torchvision

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/
+*.zip
+*.tif
+
+# Training outputs
+runs/
+checkpoints/
+
+# OS
+.DS_Store
+
+# Colab / temp
+/content/
