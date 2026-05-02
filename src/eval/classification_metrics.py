@@ -1,16 +1,16 @@
 import torch
 
 
-def compute_classification_metrics(logits, labels):
+def compute_classification_metrics(logits, labels, positive_label=0):
     preds = torch.argmax(logits, dim=1)
 
     correct = (preds == labels).sum().item()
     total = labels.numel()
 
-    tp = ((preds == 1) & (labels == 1)).sum().item()
-    tn = ((preds == 0) & (labels == 0)).sum().item()
-    fp = ((preds == 1) & (labels == 0)).sum().item()
-    fn = ((preds == 0) & (labels == 1)).sum().item()
+    tp = ((preds == positive_label) & (labels == positive_label)).sum().item()
+    tn = ((preds != positive_label) & (labels != positive_label)).sum().item()
+    fp = ((preds == positive_label) & (labels != positive_label)).sum().item()
+    fn = ((preds != positive_label) & (labels == positive_label)).sum().item()
 
     accuracy = correct / max(total, 1)
     precision = tp / max(tp + fp, 1)
@@ -26,4 +26,5 @@ def compute_classification_metrics(logits, labels):
         "tn": tn,
         "fp": fp,
         "fn": fn,
+        "positive_label": positive_label,
     }
