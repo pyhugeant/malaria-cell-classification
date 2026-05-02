@@ -1,102 +1,89 @@
-from __future__ import annotations
-
 import argparse
-from typing import Any, Dict, List, Tuple
-import pandas as pd
-import numpy as np
-import torch
-from torch.utils.data import DataLoader
-from tqdm import tqdm
+from pathlib import Path
 
-from src.config import load_yaml, resolve_device
-from src.data.split import group_split_by_fov
-from src.datasets.malaria_dataset import EventSequenceDataset
-from src.models.model import MitosisNet
-from src.inference.postprocess import heatmap_peak_xy, mask_centroid
-from src.eval.metrics import l2_error_xy, summarize_errors
+import yaml
+import torch
+from PIL import Image
+from torchvision import transforms
+
+from src.models.resnet50_classifier import build_model
+
+
+def load_config(path):
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def get_transform(image_size=224):
+    return transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+    ])
+
+
+def predict_image(model, image_path, transform, device, idx_to_class):
+    image = Image.open(image_path).convert("RGB")
+    x = transform(image).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        logits = model(x)
+        probs = torch.softmax(logits, dim=1)[0]
+        pred_idx = torch.argmax(probs).item()
+
+    pred_class = idx_to_class[pred_idx]
+    confidence = probs[pred_idx].item()
+
+    return pred_class, confidence, probs.cpu().numpy()
+
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True, type=str)
-    ap.add_argument("--split", default="val", choices=["train", "val", "test"])
-    ap.add_argument("--max_batches", default=50, type=int)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="configs/malaria_resnet50.yaml")
+    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--image", type=str, required=True)
+    args = parser.parse_args()
 
-    cfg = load_yaml(args.config)
-    device = resolve_device(str(cfg["project"]["device"]))
+    cfg = load_config(args.config)
 
-    df = pd.read_csv(str(cfg["data"]["csv_path"]))
-    fov_col = str(cfg["data"]["csv_columns"]["fov_id"])
-    split_cfg = cfg["data"]["split"]
-    split = group_split_by_fov(
-        df=df,
-        fov_col=fov_col,
-        seed=int(cfg["project"]["seed"]),
-        train_ratio=float(split_cfg["train_ratio"]),
-        val_ratio=float(split_cfg["val_ratio"]),
-        test_ratio=float(split_cfg["test_ratio"]),
-    )
-    if args.split == "train":
-        fovs = split.train_fovs
-    elif args.split == "test":
-        fovs = split.test_fovs
-    else:
-        fovs = split.val_fovs
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Device:", device)
 
-    ds = EventSequenceDataset(df, cfg, fovs, train=False)
-    loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=0)
+    checkpoint = torch.load(args.checkpoint, map_location=device)
 
-    model = MitosisNet(
-        base_channels=int(cfg["model"]["encoder"]["base_channels"]),
-        temporal_type=str(cfg["model"]["temporal"]["type"]),
-        hidden_channels=int(cfg["model"]["temporal"]["hidden_channels"]),
-    ).to(device)
+    model = build_model(cfg)
+    model.load_state_dict(checkpoint["model_state"])
+    model.to(device)
     model.eval()
 
-    # Load latest checkpoint if provided
-    # For simplicity, this script runs with random weights unless you load a checkpoint manually.
-    # You can add: --ckpt path/to/epoch_xxx.pt
+    # 根据你的 sanity check：
+    # {'Parasitized': 0, 'Uninfected': 1}
+    idx_to_class = {
+        0: "Parasitized",
+        1: "Uninfected",
+    }
 
-    meta_errors = []
-    ana_errors = []
+    transform = get_transform(cfg["data"]["image_size"])
 
-    x_col = str(cfg["data"]["csv_columns"]["x"])
-    y_col = str(cfg["data"]["csv_columns"]["y"])
-    swap_xy = bool(cfg["dataset"].get("swap_xy", False))
+    pred_class, confidence, probs = predict_image(
+        model=model,
+        image_path=args.image,
+        transform=transform,
+        device=device,
+        idx_to_class=idx_to_class,
+    )
 
-    for b, (frames, meta_t, ana_t, phase) in enumerate(tqdm(loader, desc="infer")):
-        if b >= int(args.max_batches):
-            break
-        frames = frames.to(device)
-        with torch.no_grad():
-            meta_logits, ana_logits = model(frames)
-        meta_prob = torch.sigmoid(meta_logits)[0].cpu().numpy()  # [T,1,H,W]
-        ana_prob = torch.sigmoid(ana_logits)[0].cpu().numpy()
+    print("\nPrediction result")
+    print("-----------------")
+    print(f"Image: {args.image}")
+    print(f"Predicted class: {pred_class}")
+    print(f"Confidence: {confidence:.4f}")
+    print(f"Probability Parasitized: {probs[0]:.4f}")
+    print(f"Probability Uninfected: {probs[1]:.4f}")
 
-        # Use target peak as GT point in patch coordinates (approx)
-        # Note: For precise GT, use the original CSV (full-image coords) and track crop offsets.
-        # This skeleton reports errors in patch coordinates only.
-        meta_gt = meta_t[0].numpy()  # [T,1,H,W]
-        ana_gt = ana_t[0].numpy()
-
-        for t in range(meta_prob.shape[0]):
-            px, py, _ = heatmap_peak_xy(meta_prob[t, 0])
-            gx, gy, _ = heatmap_peak_xy(meta_gt[t, 0])
-            meta_errors.append(l2_error_xy((px, py), (gx, gy)))
-
-            c = mask_centroid(ana_prob[t, 0], thr=float(cfg["inference"]["ana"]["mask_threshold"]), min_area=int(cfg["inference"]["ana"]["centroid_min_area"]))
-            if c is not None:
-                gx2, gy2, _ = heatmap_peak_xy(ana_gt[t, 0])
-                ana_errors.append(l2_error_xy(c, (gx2, gy2)))
-
-    radii = [float(x) for x in cfg["eval"]["pck_radii_px"]]
-    meta_res = summarize_errors(meta_errors, radii)
-    ana_res = summarize_errors(ana_errors, radii)
-
-    print("meta_mean_error_px", meta_res.mean_error)
-    print("meta_pck", meta_res.pck)
-    print("ana_mean_error_px", ana_res.mean_error)
-    print("ana_pck", ana_res.pck)
 
 if __name__ == "__main__":
     main()
